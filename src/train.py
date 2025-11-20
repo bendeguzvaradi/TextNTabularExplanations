@@ -12,14 +12,14 @@ import argparse
 from transformers.trainer_callback import EarlyStoppingCallback
 import evaluate
 import numpy as np
-from sklearn.metrics import precision_score, recall_score, roc_auc_score
+from sklearn.metrics import precision_score,classification_report, recall_score, f1_score, roc_auc_score
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.optim import AdamW
 from utils import (
     prepare_text,
     ConfigLoader,
 )
-from src.utils import legacy_get_dataset_info
+from utils import legacy_get_dataset_info
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -47,10 +47,11 @@ def main():
     ]
     ds_name = (
         di.all_text_dataset
-        if args["version"] in all_text_versions
-        else di.ordinal_dataset
     )
-    dataset = load_dataset(ds_name)  # , download_mode="force_redownload")
+    if args["local_ds"]:
+        dataset = load_from_disk(ds_name)
+    else:
+        dataset = load_dataset(ds_name)  # , download_mode="force_redownload")
     dataset = prepare_text(
         dataset=dataset,
         di=di,
@@ -91,16 +92,8 @@ def main():
 
     # If not, initialize wandb
     else:
-        wandb.init(
-            project=di.wandb_proj_name,
-            tags=args["tags"],
-            save_code=True,
-            config={"my_args/" + k: v for k, v in args.items()},
-        )
-        os.environ["WANDB_LOG_MODEL"] = "True"
-        output_dir = os.path.join(args["output_root"], args["dataset"], wandb.run.name)
+        output_dir = os.path.join(args["output_root"], args["dataset"], args["config"])
         print(f"Results will be saved @: {output_dir}")
-
     dataset = dataset.map(encode)
 
     # Make output directory
@@ -110,7 +103,6 @@ def main():
     # Save args file
     with open(os.path.join(output_dir, "args.yaml"), "w") as f:
         yaml.dump(args, f)
-
     # Initialise training arguments and trainer
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -127,7 +119,7 @@ def main():
         do_train=args["do_train"],
         do_predict=args["do_predict"],
         resume_from_checkpoint=args["resume_from_checkpoint"],
-        report_to="wandb" if not args["fast_dev_run"] else "none",
+        report_to="none",
         evaluation_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=args["save_total_limit"],
@@ -151,8 +143,6 @@ def main():
     if args["do_train"]:
         print("Training...")
         trainer.train()
-        if not args["fast_dev_run"]:
-            model.push_to_hub(config_type, private=True)
         print("Training complete")
 
     # Predict on the test set
@@ -170,12 +160,20 @@ def main():
                 labels=np.arange(di.num_labels),
                 zero_division=0,
             )
+            results["test/f1"] = f1_score(
+                labels,
+                np.argmax(preds, axis=1),
+                labels=np.arange(di.num_labels),
+                zero_division=0,
+            )
             results["test/recall"] = recall_score(
                 labels,
                 np.argmax(preds, axis=1),
                 labels=np.arange(di.num_labels),
                 zero_division=0,
             )
+            conf = classification_report(labels, np.argmax(preds, axis=1), labels=np.arange(di.num_labels))
+            print(conf)
             results["test/roc_auc"] = roc_auc_score(labels, preds[:, 1])
         elif di.num_labels > 2:
             results["test/accuracy"] = np.mean(np.argmax(preds, axis=1) == labels)
@@ -197,8 +195,6 @@ def main():
         # Save the predictions
         with open(os.path.join(output_dir, "test_results.txt"), "w") as f:
             f.write(str(results))
-        if not args["fast_dev_run"]:
-            wandb.log(results)
 
     print("Predictions complete")
 

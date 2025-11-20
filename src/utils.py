@@ -74,11 +74,12 @@ def prepare_text(dataset, version, di, reverse=False, model_name=None):
         dataset = dataset.map(row_to_string, fn_kwargs={"cols": cols})
         return dataset
     elif version == "text_col_only":
-        if len(di.text_cols) == 1:
+        if len(di.text_cols) == 1 and "text" not in di.text_cols:
             # dataset rename column
             dataset = dataset.rename_column(di.text_cols[0], "text")
         else:
             dataset = dataset.map(row_to_string, fn_kwargs={"cols": di.text_cols})
+        return dataset
     elif version == "all_as_text_base_reorder":
         cols = di.base_reorder_cols[model_code]
         cols = cols[::-1] if reverse else cols
